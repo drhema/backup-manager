@@ -73,7 +73,11 @@ const COMPOSE_TEMPLATE = `services:
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
       POSTGRES_DB: \${POSTGRES_DB}
       POSTGRES_DOMAIN: \${POSTGRES_DOMAIN}
-      POSTGRES_EXTENSIONS: uuid-ossp,pgcrypto,citext,hstore,pg_trgm,pg_stat_statements
+      # Extensions auto-enabled at first start by the dublyo postgres image init.
+      # NOTE: 'vector' is the extension name for pgvector. 'postgis' is omitted
+      # because dublyo image doesn't bundle the postgis binaries — switch
+      # PROVISION_POSTGRES_IMAGE to a postgis-equipped image to enable it.
+      POSTGRES_EXTENSIONS: uuid-ossp,pgcrypto,citext,hstore,pg_trgm,pg_stat_statements,vector
       PGDATA: /var/lib/postgresql/data/pgdata
     command: >
       postgres
