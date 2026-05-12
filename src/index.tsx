@@ -401,14 +401,15 @@ app.post("/provision/new", async (c) => {
   );
 });
 
-app.get("/provision/:id", (c) => {
+// Constrain :id to digits so /provision/redis doesn't get caught here.
+app.get("/provision/:id{[0-9]+}", (c) => {
   const id = Number(c.req.param("id"));
   const rec = provisioned.get(id);
   if (!rec) return c.notFound();
   return c.html(<ProvisionDetail record={rec} />);
 });
 
-app.post("/provision/:id/delete", async (c) => {
+app.post("/provision/:id{[0-9]+}/delete", async (c) => {
   const id = Number(c.req.param("id"));
   await deprovisionPostgres(id);
   return c.redirect("/provision");
@@ -469,14 +470,14 @@ app.post("/provision/redis/new", async (c) => {
   );
 });
 
-app.get("/provision/redis/:id", (c) => {
+app.get("/provision/redis/:id{[0-9]+}", (c) => {
   const id = Number(c.req.param("id"));
   const rec = provisionedRedis.get(id);
   if (!rec) return c.notFound();
   return c.html(<ProvisionRedisDetail record={rec} />);
 });
 
-app.post("/provision/redis/:id/delete", async (c) => {
+app.post("/provision/redis/:id{[0-9]+}/delete", async (c) => {
   const id = Number(c.req.param("id"));
   await deprovisionRedis(id);
   return c.redirect("/provision/redis");
