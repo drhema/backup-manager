@@ -29,7 +29,18 @@ import {
   waitForContainer,
 } from "./portainer.ts";
 
-const IMAGE = process.env.PROVISION_POSTGRES_IMAGE ?? "ghcr.io/dublyo/postgres";
+// Default image (PG 16 + 17): bundles PostGIS, pgvector, and the full extension set.
+const IMAGE = process.env.PROVISION_POSTGRES_IMAGE ?? "ghcr.io/drhema/postgres-everything";
+
+// Fallback for PG 18 (postgres-everything not built for 18 yet — pgvector apt
+// package may not exist for PG 18). Uses the dublyo image which has pgvector
+// but NO PostGIS. When PG 18 is selected, postgis CREATE EXTENSION will log
+// a warning during init rather than abort.
+const IMAGE_PG18_FALLBACK = process.env.PROVISION_POSTGRES_IMAGE_PG18 ?? "ghcr.io/dublyo/postgres";
+
+function imageForVersion(v: string): string {
+  return v === "18" ? IMAGE_PG18_FALLBACK : IMAGE;
+}
 const PORT_START = Number(process.env.PROVISION_PORT_START ?? 15432);
 const PORT_END = Number(process.env.PROVISION_PORT_END ?? 15999);
 
@@ -73,11 +84,10 @@ const COMPOSE_TEMPLATE = `services:
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
       POSTGRES_DB: \${POSTGRES_DB}
       POSTGRES_DOMAIN: \${POSTGRES_DOMAIN}
-      # Extensions auto-enabled at first start by the dublyo postgres image init.
-      # NOTE: 'vector' is the extension name for pgvector. 'postgis' is omitted
-      # because dublyo image doesn't bundle the postgis binaries — switch
-      # PROVISION_POSTGRES_IMAGE to a postgis-equipped image to enable it.
-      POSTGRES_EXTENSIONS: uuid-ossp,pgcrypto,citext,hstore,pg_trgm,pg_stat_statements,vector
+      # Extensions auto-enabled at first start. Default image
+      # (ghcr.io/drhema/postgres-everything) bundles all of these. Unknown
+      # extensions log a warning during init but don't abort.
+      POSTGRES_EXTENSIONS: uuid-ossp,pgcrypto,citext,hstore,pg_trgm,pg_stat_statements,vector,postgis
       PGDATA: /var/lib/postgresql/data/pgdata
     command: >
       postgres
@@ -199,7 +209,7 @@ export async function provisionPostgres(input: ProvisionInput): Promise<Provisio
     // 3. Deploy Portainer stack
     const env: Record<string, string> = {
       SITE_NAME: slug,
-      POSTGRES_IMAGE: IMAGE,
+      POSTGRES_IMAGE: imageForVersion(input.pgVersion),
       POSTGRES_VERSION: input.pgVersion,
       POSTGRES_USER: pgUser,
       POSTGRES_PASSWORD: pgPassword,

@@ -119,10 +119,11 @@ export const ProvisionForm: FC<{ baseDomain: string; portStart: number; portEnd:
           <label class="block">
             <span class="block text-sm font-medium text-slate-700">Postgres version</span>
             <select name="pg_version" class="mt-1 block w-full rounded border-slate-300 shadow-sm text-sm py-2 px-3 border">
-              <option value="18" selected>18 — Newest</option>
-              <option value="17">17 — Stable</option>
+              <option value="17" selected>17 — Stable (recommended)</option>
               <option value="16">16 — LTS</option>
+              <option value="18">18 — Newest (no PostGIS yet)</option>
             </select>
+            <span class="text-xs text-slate-500 mt-1 block">17 and 16 include the full extension set including PostGIS. 18 falls back to the dublyo image (PostGIS not bundled).</span>
           </label>
 
           <label class="block">
