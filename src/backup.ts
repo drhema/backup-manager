@@ -1,8 +1,8 @@
 // Orchestrates a single backup or restore: db.ts state + pg.ts dump + s3.ts upload.
 // Centralizes file naming, retention math, and per-run telemetry.
 
-import { PassThrough } from "node:stream";
 import { mkdirSync, createReadStream, createWriteStream, statSync, unlinkSync } from "node:fs";
+import { finished } from "node:stream/promises";
 import { join } from "node:path";
 import { databases, destinations, schedules, backups } from "./db.ts";
 import type { Database_, Destination, Schedule } from "./db.ts";
@@ -61,7 +61,14 @@ export async function runBackup(opts: {
   // 1. pg_dump -> scratch file
   const out = createWriteStream(scratchPath);
   const dumpRes = await streamDump(db, out);
-  await new Promise<void>((res) => out.on("close", () => res()));
+  // `finished` handles already-closed and pending-close cases (bug: a raw
+  // out.on("close", ...) hangs forever if the stream closed before the
+  // listener was attached, which can happen for very small dumps).
+  try {
+    await finished(out);
+  } catch {
+    // ignore — closure errors are surfaced by dumpRes.error if relevant
+  }
 
   if (!dumpRes.ok) {
     backups.finish(record.id, {
