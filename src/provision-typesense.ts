@@ -90,11 +90,9 @@ const COMPOSE_TEMPLATE = `services:
         reservations:
           memory: 64M
           cpus: "0.1"
-    healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8108 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
+    # NO healthcheck: Traefik filters containers whose health status is
+    # 'starting' or 'unhealthy', and the typesense image lacks bash + curl
+    # for a working probe. Restart policy + docker's auto-recovery is enough.
     logging:
       driver: json-file
       options:
