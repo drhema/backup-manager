@@ -83,12 +83,16 @@ export function fqdn(subdomain: string): string {
   return `${subdomain}.${CF_BASE_DOMAIN}`;
 }
 
-/** Generate a short random subdomain suitable for a Postgres DB. */
-export function randomSubdomain(prefix = "pg"): string {
-  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let s = "";
-  for (let i = 0; i < 8; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return `${prefix}-${s}`;
+/**
+ * Generate a random subdomain matching the existing dublyo.co pattern:
+ *   postgres-<8 hex chars>
+ * e.g. postgres-26df2af5
+ */
+export function randomSubdomain(prefix = "postgres"): string {
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${prefix}-${hex}`;
 }
 
 let _cachedIp: string | null = null;

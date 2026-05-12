@@ -136,10 +136,11 @@ export async function provisionPostgres(input: ProvisionInput): Promise<Provisio
     return { ok: false, error: "Portainer not configured. Set PORTAINER_URL + PORTAINER_API_KEY env vars." };
   }
 
-  // Resolve slug + subdomain
+  // Resolve slug + subdomain. Auto-generated names follow the existing
+  // dublyo.co convention: postgres-<8-hex>.
   let slug = (input.slugHint ?? "").trim().toLowerCase();
   if (!slug) {
-    slug = randomSubdomain("pg");
+    slug = randomSubdomain("postgres");
   } else if (!validSlug(slug)) {
     return {
       ok: false,
