@@ -86,13 +86,31 @@ function isDue(cron: string, now: Date, lastRunAt: string | null): boolean {
 function matchField(field: string, value: number, min: number, max: number): boolean {
   if (field === "*") return true;
   for (const piece of field.split(",")) {
-    if (piece.includes("-")) {
-      const [a, b] = piece.split("-").map(Number);
-      if (Number.isFinite(a) && Number.isFinite(b) && value >= a && value <= b) return true;
-    } else {
-      const n = Number(piece);
-      if (Number.isFinite(n) && n === value) return true;
+    // Step values: */N, A/N, A-B/N
+    let body = piece;
+    let step = 1;
+    if (piece.includes("/")) {
+      const [b, s] = piece.split("/");
+      body = b;
+      step = Number(s);
+      if (!Number.isFinite(step) || step < 1) continue;
     }
+    let lo = min;
+    let hi = max;
+    if (body === "*") {
+      // already lo=min, hi=max
+    } else if (body.includes("-")) {
+      const [a, b] = body.split("-").map(Number);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+      lo = a;
+      hi = b;
+    } else {
+      const n = Number(body);
+      if (!Number.isFinite(n)) continue;
+      lo = n;
+      hi = step === 1 ? n : max;
+    }
+    if (value >= lo && value <= hi && (value - lo) % step === 0) return true;
   }
   return false;
 }
