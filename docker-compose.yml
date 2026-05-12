@@ -33,6 +33,11 @@ services:
   backup-manager:
     image: ${BACKUP_MANAGER_IMAGE}
     container_name: backup-manager
+    # Add the host's docker group GID so the non-root `app` user can read
+    # /var/run/docker.sock. Common Ubuntu values: 988 (24.04), 999 (22.04).
+    # On the server, get it with:  getent group docker | cut -d: -f3
+    group_add:
+      - "988"
     restart: unless-stopped
     expose:
       - "8085"

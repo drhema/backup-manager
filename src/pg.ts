@@ -1,13 +1,20 @@
-// pg_dump and pg_restore via Docker exec into the target Postgres container.
-// We talk to the Docker socket via dockerode — no docker CLI needed in the
-// backup-manager image. The target container provides pg_dump/pg_restore.
+// pg_dump / pg_restore / pg_isready via `docker exec` calling the Docker CLI
+// installed in this image. We don't use a Node Docker client library because
+// docker-modem (dockerode's HTTP layer) chokes on the HTTP 101 Switching
+// Protocols response that Docker uses for streaming exec — Bun's HTTP stack
+// surfaces it as "(HTTP code 101) unexpected". Shelling out to the docker CLI
+// avoids the whole class of HTTP-streaming compat issues.
+//
+// The container needs:
+//   - /var/run/docker.sock mounted
+//   - membership in the host's `docker` group (use `group_add: ["<docker_gid>"]`
+//     in docker-compose since the GID varies per host; common values are 988
+//     and 999 depending on Ubuntu version)
+//   - the `docker` CLI binary installed (apk add docker-cli)
 
-import Docker from "dockerode";
-import type { Readable, Writable } from "node:stream";
 import { createHash } from "node:crypto";
+import type { Readable, Writable } from "node:stream";
 import type { Database_ } from "./db.ts";
-
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
 export type DumpResult = {
   ok: boolean;
@@ -18,28 +25,20 @@ export type DumpResult = {
 
 /**
  * Stream pg_dump output from a target Postgres container to a writable stream.
- * Counts bytes and computes sha256 in transit. Returns when pg_dump exits.
+ * Returns when pg_dump exits. Counts bytes + computes sha256 in transit.
  */
 export async function streamDump(
   database: Database_,
   out: Writable,
 ): Promise<DumpResult> {
-  const container = docker.getContainer(database.container_name);
-
-  // Confirm container is running
-  try {
-    const info = await container.inspect();
-    if (!info.State.Running) {
-      return { ok: false, bytes: 0, sha256: "", error: "container not running" };
-    }
-  } catch (e: any) {
-    return { ok: false, bytes: 0, sha256: "", error: `inspect failed: ${e.message}` };
-  }
-
-  // pg_dump command — custom format (-Fc), no owner/role baked in (-O), include
-  // permissions, exclude logical replication slots that aren't restorable.
-  const exec = await container.exec({
-    Cmd: [
+  const proc = Bun.spawn(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "--env",
+      `PGPASSWORD=${database.pg_password}`,
+      database.container_name,
       "pg_dump",
       "-U",
       database.pg_user,
@@ -47,112 +46,65 @@ export async function streamDump(
       database.pg_database,
       "-Fc",
       "-Z",
-      "6", // gzip level 6 inside custom format
+      "6",
       "--no-owner",
       "--no-privileges",
     ],
-    Env: [`PGPASSWORD=${database.pg_password}`],
-    AttachStdout: true,
-    AttachStderr: true,
-    Tty: false,
-  });
-
-  const stream = (await exec.start({ hijack: true, stdin: false })) as Readable;
-
-  // Demultiplex: docker exec without TTY returns multiplexed stdout/stderr
-  // (header-prefixed). Use modem.demuxStream.
-  const stderrChunks: Buffer[] = [];
-  const stderrSink: Writable = (await import("node:stream")).Writable
-    ? new (await import("node:stream")).Writable({
-        write(chunk: Buffer, _enc, cb) {
-          stderrChunks.push(chunk);
-          cb();
-        },
-      })
-    : (null as any);
+    {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
 
   let bytes = 0;
   const hash = createHash("sha256");
 
-  const counting: Writable = (await import("node:stream")).Writable
-    ? new (await import("node:stream")).Writable({
-        write(chunk: Buffer, _enc, cb) {
-          bytes += chunk.length;
-          hash.update(chunk);
-          out.write(chunk, cb);
-        },
-        final(cb) {
-          out.end();
-          cb();
-        },
-      })
-    : (null as any);
-
-  return await new Promise<DumpResult>((resolve) => {
-    let settled = false;
-    const settle = (r: DumpResult) => {
-      if (!settled) {
-        settled = true;
-        resolve(r);
+  try {
+    const reader = proc.stdout.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        bytes += value.byteLength;
+        hash.update(value);
+        if (!out.write(Buffer.from(value))) {
+          await new Promise<void>((res) => out.once("drain", () => res()));
+        }
       }
-    };
+    }
+    out.end();
+  } catch (e: any) {
+    return { ok: false, bytes, sha256: hash.digest("hex"), error: `stream error: ${e.message}` };
+  }
 
-    counting.on("error", (e) =>
-      settle({ ok: false, bytes, sha256: "", error: `write error: ${e.message}` }),
-    );
-    out.on("error", (e) =>
-      settle({ ok: false, bytes, sha256: "", error: `out error: ${e.message}` }),
-    );
+  const exitCode = await proc.exited;
+  const sha256 = hash.digest("hex");
 
-    docker.modem.demuxStream(stream, counting, stderrSink);
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    return { ok: false, bytes, sha256, error: `pg_dump exit ${exitCode}: ${stderr.trim() || "(no stderr)"}` };
+  }
 
-    stream.on("end", async () => {
-      // Inspect exit code
-      let code = -1;
-      try {
-        const info = await exec.inspect();
-        code = info.ExitCode ?? -1;
-      } catch {}
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
-      if (code !== 0) {
-        settle({
-          ok: false,
-          bytes,
-          sha256: hash.digest("hex"),
-          error: `pg_dump exit ${code}: ${stderr || "(no stderr)"}`,
-        });
-      } else {
-        settle({ ok: true, bytes, sha256: hash.digest("hex") });
-      }
-    });
-
-    stream.on("error", (e) =>
-      settle({ ok: false, bytes, sha256: "", error: `stream error: ${e.message}` }),
-    );
-  });
+  return { ok: true, bytes, sha256 };
 }
 
 /**
- * Stream pg_restore stdin from a readable into the target Postgres container.
- * cleanFirst=true uses --clean --if-exists (destructive).
+ * Pipe a dump file (custom format) into pg_restore inside the target container.
+ * cleanFirst=true adds --clean --if-exists (destructive).
  */
 export async function streamRestore(
   database: Database_,
   input: Readable,
   cleanFirst = false,
 ): Promise<{ ok: boolean; error?: string }> {
-  const container = docker.getContainer(database.container_name);
-
-  try {
-    const info = await container.inspect();
-    if (!info.State.Running) {
-      return { ok: false, error: "container not running" };
-    }
-  } catch (e: any) {
-    return { ok: false, error: `inspect failed: ${e.message}` };
-  }
-
   const cmd = [
+    "docker",
+    "exec",
+    "-i",
+    "--env",
+    `PGPASSWORD=${database.pg_password}`,
+    database.container_name,
     "pg_restore",
     "-U",
     database.pg_user,
@@ -162,99 +114,103 @@ export async function streamRestore(
     "--role",
     database.pg_user,
   ];
-  if (cleanFirst) {
-    cmd.push("--clean", "--if-exists");
+  if (cleanFirst) cmd.push("--clean", "--if-exists");
+
+  const proc = Bun.spawn(cmd, {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  // proc.stdin is a Bun FileSink: write(chunk) + end() directly
+  const stdin = proc.stdin as { write: (data: any) => number; end: () => void };
+  try {
+    for await (const chunk of input as any) {
+      stdin.write(chunk instanceof Uint8Array ? chunk : Buffer.from(chunk));
+    }
+    stdin.end();
+  } catch (e: any) {
+    return { ok: false, error: `input pipe error: ${e.message}` };
   }
 
-  const exec = await container.exec({
-    Cmd: cmd,
-    Env: [`PGPASSWORD=${database.pg_password}`],
-    AttachStdin: true,
-    AttachStdout: true,
-    AttachStderr: true,
-    Tty: false,
-  });
-
-  const stream = (await exec.start({ hijack: true, stdin: true })) as any;
-
-  return await new Promise((resolve) => {
-    let settled = false;
-    const stderrChunks: Buffer[] = [];
-    const settle = (r: { ok: boolean; error?: string }) => {
-      if (!settled) {
-        settled = true;
-        resolve(r);
-      }
-    };
-
-    const noopOut = new (require("node:stream").Writable)({
-      write(_chunk: Buffer, _enc: any, cb: any) {
-        cb();
-      },
-    });
-    const stderrSink = new (require("node:stream").Writable)({
-      write(chunk: Buffer, _enc: any, cb: any) {
-        stderrChunks.push(chunk);
-        cb();
-      },
-    });
-
-    docker.modem.demuxStream(stream, noopOut, stderrSink);
-
-    input.pipe(stream);
-    input.on("end", () => stream.end());
-    input.on("error", (e) => settle({ ok: false, error: `input error: ${e.message}` }));
-
-    stream.on("end", async () => {
-      let code = -1;
-      try {
-        const info = await exec.inspect();
-        code = info.ExitCode ?? -1;
-      } catch {}
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
-      if (code !== 0) {
-        settle({ ok: false, error: `pg_restore exit ${code}: ${stderr || "(no stderr)"}` });
-      } else {
-        settle({ ok: true });
-      }
-    });
-  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    return { ok: false, error: `pg_restore exit ${exitCode}: ${stderr.trim() || "(no stderr)"}` };
+  }
+  return { ok: true };
 }
 
-/** Test a database is reachable + credentials are correct. */
+/** Test the credentials work by running pg_isready inside the target container. */
 export async function pingDatabase(
   database: Database_,
 ): Promise<{ ok: boolean; error?: string }> {
-  const container = docker.getContainer(database.container_name);
-  try {
-    const exec = await container.exec({
-      Cmd: ["pg_isready", "-U", database.pg_user, "-d", database.pg_database],
-      Env: [`PGPASSWORD=${database.pg_password}`],
-      AttachStdout: true,
-      AttachStderr: true,
-    });
-    const stream = (await exec.start({ hijack: true, stdin: false })) as Readable;
-    await new Promise<void>((res) => stream.on("end", () => res()));
-    const info = await exec.inspect();
-    if (info.ExitCode !== 0) {
-      return { ok: false, error: `pg_isready exit ${info.ExitCode}` };
-    }
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, error: e.message };
+  // First confirm the container exists at all
+  const inspect = Bun.spawn(
+    ["docker", "inspect", "--format", "{{.State.Running}}", database.container_name],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const inspectOut = (await new Response(inspect.stdout).text()).trim();
+  if ((await inspect.exited) !== 0) {
+    return { ok: false, error: `container '${database.container_name}' not found` };
   }
+  if (inspectOut !== "true") {
+    return { ok: false, error: `container '${database.container_name}' is not running` };
+  }
+
+  const proc = Bun.spawn(
+    [
+      "docker",
+      "exec",
+      "--env",
+      `PGPASSWORD=${database.pg_password}`,
+      database.container_name,
+      "pg_isready",
+      "-U",
+      database.pg_user,
+      "-d",
+      database.pg_database,
+    ],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const code = await proc.exited;
+  if (code !== 0) {
+    const stderr = (await new Response(proc.stderr).text()).trim();
+    return { ok: false, error: `pg_isready exit ${code}: ${stderr || "(no stderr)"}` };
+  }
+  return { ok: true };
 }
 
 /** Discover candidate Postgres containers via label filter. */
 export async function discoverCandidates(): Promise<
   { name: string; image: string; labels: Record<string, string> }[]
 > {
-  const containers = await docker.listContainers({
-    filters: { label: ["hosting.backup.enabled=true"] },
-  });
-  return containers.map((c) => ({
-    name: c.Names[0]?.replace(/^\//, "") ?? "",
-    image: c.Image,
-    labels: c.Labels ?? {},
-  }));
+  const proc = Bun.spawn(
+    [
+      "docker",
+      "ps",
+      "--filter",
+      "label=hosting.backup.enabled=true",
+      "--format",
+      "{{.Names}}\t{{.Image}}\t{{.Labels}}",
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+
+  const candidates: { name: string; image: string; labels: Record<string, string> }[] = [];
+  for (const line of out.trim().split("\n").filter(Boolean)) {
+    const [name, image, labelsStr] = line.split("\t");
+    const labels: Record<string, string> = {};
+    for (const kv of (labelsStr ?? "").split(",")) {
+      const eq = kv.indexOf("=");
+      if (eq > 0) labels[kv.slice(0, eq).trim()] = kv.slice(eq + 1).trim();
+    }
+    candidates.push({ name: name ?? "", image: image ?? "", labels });
+  }
+  return candidates;
 }

@@ -19,9 +19,11 @@ RUN bunx tsc --noEmit
 FROM oven/bun:1.1-alpine AS runtime
 WORKDIR /app
 
-# Install postgres-client for pg_dump/pg_restore commands run via docker exec on
-# remote containers — we don't actually need pg tools in this image because we
-# exec inside the target Postgres container. Skip unless future need arises.
+# docker-cli: backup-manager shells out to `docker exec` for pg_dump/pg_restore.
+# Reasons we don't use a Node Docker client library: docker-modem chokes on the
+# HTTP 101 Switching Protocols response that Docker uses for streaming exec —
+# see src/pg.ts comment. The CLI uses /var/run/docker.sock (mounted at runtime).
+RUN apk add --no-cache docker-cli
 
 # Non-root user for runtime
 RUN addgroup -S app && adduser -S app -G app
