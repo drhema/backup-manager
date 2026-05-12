@@ -55,9 +55,24 @@ services:
       DEFAULT_S3_ACCESS_KEY: ${DEFAULT_S3_ACCESS_KEY:-}
       DEFAULT_S3_SECRET_KEY: ${DEFAULT_S3_SECRET_KEY:-}
 
-      # Optional Portainer integration
-      PORTAINER_URL: ${PORTAINER_URL:-https://portainer:9000}
+      # Portainer integration (needed for "+ Postgres" provisioning)
+      PORTAINER_URL: ${PORTAINER_URL:-http://portainer:9000}
       PORTAINER_API_KEY: ${PORTAINER_API_KEY:-}
+      PORTAINER_ENDPOINT_ID: ${PORTAINER_ENDPOINT_ID:-3}
+
+      # Cloudflare DNS API (needed for "+ Postgres" provisioning — creates A
+      # record on a random subdomain pointing to this server's public IP)
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      CF_ZONE_ID: ${CF_ZONE_ID:-}
+      CF_BASE_DOMAIN: ${CF_BASE_DOMAIN:-}
+
+      # Optional: pin this server's public IPv4 (auto-detected via ipify if blank)
+      SERVER_PUBLIC_IP: ${SERVER_PUBLIC_IP:-}
+
+      # Provisioning defaults
+      PROVISION_POSTGRES_IMAGE: ${PROVISION_POSTGRES_IMAGE:-ghcr.io/dublyo/postgres}
+      PROVISION_PORT_START: ${PROVISION_PORT_START:-15432}
+      PROVISION_PORT_END: ${PROVISION_PORT_END:-15999}
 
       # Optional CF Access JWT verification
       CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}

@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { databases, destinations, schedules, backups, seedDefaults } from "./db.ts";
+import { databases, destinations, schedules, backups, provisioned, seedDefaults } from "./db.ts";
 import { runBackup, runRestore } from "./backup.ts";
 import {
   pingDatabase,
@@ -15,6 +15,9 @@ import {
 } from "./s3.ts";
 import { startScheduler } from "./scheduler.ts";
 import { cfAccessMiddleware } from "./auth.ts";
+import { provisionPostgres, deprovisionPostgres } from "./provision.ts";
+import { cfConfigured } from "./cloudflare.ts";
+import { portainerConfigured } from "./portainer.ts";
 import { Layout } from "./views/layout.tsx";
 import { Dashboard } from "./views/dashboard.tsx";
 import { Databases, DatabaseDetail } from "./views/databases.tsx";
@@ -22,6 +25,7 @@ import { Destinations } from "./views/destinations.tsx";
 import { Backups, BackupDetail, RestoreForm } from "./views/backups.tsx";
 import { Schedules } from "./views/schedules.tsx";
 import { S3Browser } from "./views/s3browser.tsx";
+import { ProvisionList, ProvisionForm, ProvisionResult, ProvisionDetail } from "./views/provision.tsx";
 
 const app = new Hono();
 
@@ -332,6 +336,80 @@ app.post("/s3-browser/delete", async (c) => {
     return c.text(`delete failed: ${e.message}`, 500);
   }
   return c.redirect(`/s3-browser?destination_id=${destId}`);
+});
+
+// ===== Provision Postgres =====
+app.get("/provision", (c) => {
+  const items = provisioned.list();
+  return c.html(
+    <ProvisionList
+      items={items}
+      cfConfigured={cfConfigured()}
+      portainerConfigured={portainerConfigured()}
+      baseDomain={process.env.CF_BASE_DOMAIN ?? ""}
+    />,
+  );
+});
+
+app.get("/provision/new", (c) => {
+  if (!cfConfigured() || !portainerConfigured()) {
+    return c.redirect("/provision");
+  }
+  return c.html(
+    <ProvisionForm
+      baseDomain={process.env.CF_BASE_DOMAIN ?? ""}
+      portStart={Number(process.env.PROVISION_PORT_START ?? 15432)}
+      portEnd={Number(process.env.PROVISION_PORT_END ?? 15999)}
+    />,
+  );
+});
+
+app.post("/provision/new", async (c) => {
+  const form = await c.req.parseBody();
+  const result = await provisionPostgres({
+    slugHint: form.slug ? String(form.slug) : undefined,
+    pgVersion: (String(form.pg_version) as "16" | "17" | "18") ?? "18",
+    pgUser: form.pg_user ? String(form.pg_user) : undefined,
+    pgDatabase: form.pg_database ? String(form.pg_database) : undefined,
+  });
+
+  if (!result.id) {
+    // Provisioning failed before even creating the tracking row; just show an error layout
+    return c.html(
+      <Layout title="Provisioning failed" active="provision">
+        <div class="max-w-xl space-y-4">
+          <h1 class="text-xl font-bold text-red-700">Provisioning failed</h1>
+          <pre class="text-xs bg-red-50 border border-red-200 rounded p-3 whitespace-pre-wrap">{result.error}</pre>
+          <a href="/provision" class="inline-block bg-slate-900 text-white px-3 py-2 rounded text-sm">Back</a>
+        </div>
+      </Layout>,
+    );
+  }
+
+  const rec = provisioned.get(result.id)!;
+  return c.html(
+    <ProvisionResult
+      record={rec}
+      connectionUrl={result.connectionUrl}
+      pgUser={result.pgUser}
+      pgPassword={result.pgPassword}
+      pgDatabase={result.pgDatabase}
+      error={result.ok ? undefined : result.error}
+    />,
+  );
+});
+
+app.get("/provision/:id", (c) => {
+  const id = Number(c.req.param("id"));
+  const rec = provisioned.get(id);
+  if (!rec) return c.notFound();
+  return c.html(<ProvisionDetail record={rec} />);
+});
+
+app.post("/provision/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  await deprovisionPostgres(id);
+  return c.redirect("/provision");
 });
 
 // ===== Boot =====

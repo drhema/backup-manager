@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS backups (
 
 CREATE INDEX IF NOT EXISTS idx_backups_db ON backups(database_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_backups_status ON backups(status);
+
+CREATE TABLE IF NOT EXISTS provisioned_postgres (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug            TEXT NOT NULL UNIQUE,
+  subdomain       TEXT NOT NULL UNIQUE,
+  domain          TEXT NOT NULL,
+  host_port       INTEGER NOT NULL,
+  pg_version      TEXT NOT NULL,
+  cf_record_id    TEXT,
+  portainer_stack_id INTEGER,
+  container_name  TEXT NOT NULL,
+  database_id     INTEGER REFERENCES databases(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL CHECK (status IN ('creating','ready','failed','deleted')),
+  error           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 `);
 
 // ---- Types ----
@@ -346,6 +362,82 @@ export const backups = {
   },
   remove(id: number) {
     db.query("DELETE FROM backups WHERE id = ?").run(id);
+  },
+};
+
+// ---- Provisioned Postgres ----
+export type ProvisionedPostgres = {
+  id: number;
+  slug: string;
+  subdomain: string;
+  domain: string;
+  host_port: number;
+  pg_version: string;
+  cf_record_id: string | null;
+  portainer_stack_id: number | null;
+  container_name: string;
+  database_id: number | null;
+  status: "creating" | "ready" | "failed" | "deleted";
+  error: string | null;
+  created_at: string;
+};
+
+export const provisioned = {
+  list(): ProvisionedPostgres[] {
+    return db
+      .query("SELECT * FROM provisioned_postgres WHERE status != 'deleted' ORDER BY id DESC")
+      .all() as ProvisionedPostgres[];
+  },
+  get(id: number): ProvisionedPostgres | null {
+    return (db
+      .query("SELECT * FROM provisioned_postgres WHERE id = ?")
+      .get(id) as ProvisionedPostgres) ?? null;
+  },
+  create(input: {
+    slug: string;
+    subdomain: string;
+    domain: string;
+    host_port: number;
+    pg_version: string;
+    container_name: string;
+  }): ProvisionedPostgres {
+    const info = db
+      .query(
+        `INSERT INTO provisioned_postgres (slug, subdomain, domain, host_port, pg_version, container_name, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'creating')`,
+      )
+      .run(
+        input.slug,
+        input.subdomain,
+        input.domain,
+        input.host_port,
+        input.pg_version,
+        input.container_name,
+      );
+    return this.get(Number(info.lastInsertRowid))!;
+  },
+  update(id: number, fields: Partial<Omit<ProvisionedPostgres, "id" | "created_at">>) {
+    const cur = this.get(id);
+    if (!cur) throw new Error("Provisioned record not found");
+    const merged = { ...cur, ...fields };
+    db.query(
+      `UPDATE provisioned_postgres SET slug=?, subdomain=?, domain=?, host_port=?, pg_version=?,
+         cf_record_id=?, portainer_stack_id=?, container_name=?, database_id=?, status=?, error=?
+       WHERE id=?`,
+    ).run(
+      merged.slug,
+      merged.subdomain,
+      merged.domain,
+      merged.host_port,
+      merged.pg_version,
+      merged.cf_record_id,
+      merged.portainer_stack_id,
+      merged.container_name,
+      merged.database_id,
+      merged.status,
+      merged.error,
+      id,
+    );
   },
 };
 
