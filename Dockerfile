@@ -44,4 +44,4 @@ EXPOSE 8085
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO- http://localhost:8085/healthz || exit 1
 
-CMD ["bun", "run", "src/index.ts"]
+CMD ["bun", "run", "src/index.tsx"]

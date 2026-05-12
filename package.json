@@ -5,9 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun --hot run src/index.ts",
-    "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outdir=dist",
+    "dev": "bun --hot run src/index.tsx",
+    "start": "bun run src/index.tsx",
+    "build": "bun build src/index.tsx --target=bun --outdir=dist",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
