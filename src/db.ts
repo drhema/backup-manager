@@ -105,6 +105,21 @@ CREATE TABLE IF NOT EXISTS provisioned_redis (
   error           TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS provisioned_typesense (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug              TEXT NOT NULL UNIQUE,
+  subdomain         TEXT NOT NULL UNIQUE,
+  domain            TEXT NOT NULL,
+  typesense_version TEXT NOT NULL,
+  api_key_enc       TEXT NOT NULL,
+  cf_record_id      TEXT,
+  portainer_stack_id INTEGER,
+  container_name    TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('creating','ready','failed','deleted')),
+  error             TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 `);
 
 // ---- Types ----
@@ -528,6 +543,83 @@ export const provisionedRedis = {
       merged.host_port,
       merged.redis_version,
       encrypt(merged.password),
+      merged.cf_record_id,
+      merged.portainer_stack_id,
+      merged.container_name,
+      merged.status,
+      merged.error,
+      id,
+    );
+  },
+};
+
+// ---- Provisioned Typesense ----
+export type ProvisionedTypesense = {
+  id: number;
+  slug: string;
+  subdomain: string;
+  domain: string;
+  typesense_version: string;
+  api_key: string;             // decrypted in-memory
+  cf_record_id: string | null;
+  portainer_stack_id: number | null;
+  container_name: string;
+  status: "creating" | "ready" | "failed" | "deleted";
+  error: string | null;
+  created_at: string;
+};
+
+export const provisionedTypesense = {
+  list(): ProvisionedTypesense[] {
+    const rows = db
+      .query("SELECT * FROM provisioned_typesense WHERE status != 'deleted' ORDER BY id DESC")
+      .all() as any[];
+    return rows.map((r) => ({ ...r, api_key: decrypt(r.api_key_enc) }));
+  },
+  get(id: number): ProvisionedTypesense | null {
+    const r = db
+      .query("SELECT * FROM provisioned_typesense WHERE id = ?")
+      .get(id) as any;
+    if (!r) return null;
+    return { ...r, api_key: decrypt(r.api_key_enc) };
+  },
+  create(input: {
+    slug: string;
+    subdomain: string;
+    domain: string;
+    typesense_version: string;
+    api_key: string;
+    container_name: string;
+  }): ProvisionedTypesense {
+    const info = db
+      .query(
+        `INSERT INTO provisioned_typesense (slug, subdomain, domain, typesense_version, api_key_enc, container_name, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'creating')`,
+      )
+      .run(
+        input.slug,
+        input.subdomain,
+        input.domain,
+        input.typesense_version,
+        encrypt(input.api_key),
+        input.container_name,
+      );
+    return this.get(Number(info.lastInsertRowid))!;
+  },
+  update(id: number, fields: Partial<Omit<ProvisionedTypesense, "id" | "created_at">>) {
+    const cur = this.get(id);
+    if (!cur) throw new Error("Provisioned Typesense not found");
+    const merged = { ...cur, ...fields };
+    db.query(
+      `UPDATE provisioned_typesense SET slug=?, subdomain=?, domain=?, typesense_version=?,
+         api_key_enc=?, cf_record_id=?, portainer_stack_id=?, container_name=?, status=?, error=?
+       WHERE id=?`,
+    ).run(
+      merged.slug,
+      merged.subdomain,
+      merged.domain,
+      merged.typesense_version,
+      encrypt(merged.api_key),
       merged.cf_record_id,
       merged.portainer_stack_id,
       merged.container_name,

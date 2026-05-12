@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { databases, destinations, schedules, backups, provisioned, provisionedRedis, seedDefaults } from "./db.ts";
+import { databases, destinations, schedules, backups, provisioned, provisionedRedis, provisionedTypesense, seedDefaults } from "./db.ts";
 import { runBackup, runRestore } from "./backup.ts";
 import {
   pingDatabase,
@@ -28,6 +28,8 @@ import { S3Browser } from "./views/s3browser.tsx";
 import { ProvisionList, ProvisionForm, ProvisionResult, ProvisionDetail } from "./views/provision.tsx";
 import { ProvisionRedisList, ProvisionRedisForm, ProvisionRedisResult, ProvisionRedisDetail } from "./views/provision-redis.tsx";
 import { provisionRedis, deprovisionRedis } from "./provision-redis.ts";
+import { ProvisionTypesenseList, ProvisionTypesenseForm, ProvisionTypesenseResult, ProvisionTypesenseDetail } from "./views/provision-typesense.tsx";
+import { provisionTypesense, deprovisionTypesense } from "./provision-typesense.ts";
 
 const app = new Hono();
 
@@ -481,6 +483,66 @@ app.post("/provision/redis/:id{[0-9]+}/delete", async (c) => {
   const id = Number(c.req.param("id"));
   await deprovisionRedis(id);
   return c.redirect("/provision/redis");
+});
+
+// ===== Provision Typesense =====
+app.get("/provision/typesense", (c) => {
+  return c.html(
+    <ProvisionTypesenseList
+      items={provisionedTypesense.list()}
+      cfConfigured={cfConfigured()}
+      portainerConfigured={portainerConfigured()}
+      baseDomain={process.env.CF_BASE_DOMAIN ?? ""}
+    />,
+  );
+});
+
+app.get("/provision/typesense/new", (c) => {
+  if (!cfConfigured() || !portainerConfigured()) return c.redirect("/provision/typesense");
+  return c.html(<ProvisionTypesenseForm baseDomain={process.env.CF_BASE_DOMAIN ?? ""} />);
+});
+
+app.post("/provision/typesense/new", async (c) => {
+  const form = await c.req.parseBody();
+  const result = await provisionTypesense({
+    slugHint: form.slug ? String(form.slug) : undefined,
+    typesenseVersion: String(form.typesense_version ?? "27.1"),
+  });
+
+  if (!result.id) {
+    return c.html(
+      <Layout title="Typesense provisioning failed" active="provision-typesense">
+        <div class="max-w-xl space-y-4">
+          <h1 class="text-xl font-bold text-red-700">Provisioning failed</h1>
+          <pre class="text-xs bg-red-50 border border-red-200 rounded p-3 whitespace-pre-wrap">{result.error}</pre>
+          <a href="/provision/typesense" class="inline-block bg-slate-900 text-white px-3 py-2 rounded text-sm">Back</a>
+        </div>
+      </Layout>,
+    );
+  }
+
+  const rec = provisionedTypesense.get(result.id)!;
+  return c.html(
+    <ProvisionTypesenseResult
+      record={rec}
+      url={result.url}
+      apiKey={result.apiKey}
+      error={result.ok ? undefined : result.error}
+    />,
+  );
+});
+
+app.get("/provision/typesense/:id{[0-9]+}", (c) => {
+  const id = Number(c.req.param("id"));
+  const rec = provisionedTypesense.get(id);
+  if (!rec) return c.notFound();
+  return c.html(<ProvisionTypesenseDetail record={rec} />);
+});
+
+app.post("/provision/typesense/:id{[0-9]+}/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  await deprovisionTypesense(id);
+  return c.redirect("/provision/typesense");
 });
 
 // ===== Boot =====

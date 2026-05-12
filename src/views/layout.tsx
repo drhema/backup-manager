@@ -32,6 +32,7 @@ export const Layout: FC<{ title?: string; active?: string; children?: any }> = (
             <NavLink href="/s3-browser" label="S3 Browser" active={active === "s3-browser"} />
             <NavLink href="/provision" label="+ Postgres" active={active === "provision"} />
             <NavLink href="/provision/redis" label="+ Redis" active={active === "provision-redis"} />
+            <NavLink href="/provision/typesense" label="+ Typesense" active={active === "provision-typesense"} />
           </div>
           <a href="/healthz" class="text-xs text-slate-400 hover:text-slate-100">health</a>
         </div>
