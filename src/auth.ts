@@ -70,11 +70,15 @@ async function verifyJwt(token: string): Promise<{
   const key = keys.get(header.kid);
   if (!key) return { ok: false, reason: `unknown kid ${header.kid}` };
 
+  // Cast through `any`: TextEncoder.encode and decodeBase64Url return
+  // `Uint8Array<ArrayBufferLike>`, but crypto.subtle.verify wants the narrower
+  // `Uint8Array<ArrayBuffer>` (i.e. BufferSource from DOM lib). Same bytes at
+  // runtime, just a TS 5.7+ generics tightening.
   const valid = await crypto.subtle.verify(
     "RSASSA-PKCS1-v1_5",
     key,
-    sig,
-    signedBytes,
+    sig as any,
+    signedBytes as any,
   );
   if (!valid) return { ok: false, reason: "bad signature" };
 
