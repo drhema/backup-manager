@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { databases, destinations, schedules, backups, provisioned, seedDefaults } from "./db.ts";
+import { databases, destinations, schedules, backups, provisioned, provisionedRedis, seedDefaults } from "./db.ts";
 import { runBackup, runRestore } from "./backup.ts";
 import {
   pingDatabase,
@@ -26,6 +26,8 @@ import { Backups, BackupDetail, RestoreForm } from "./views/backups.tsx";
 import { Schedules } from "./views/schedules.tsx";
 import { S3Browser } from "./views/s3browser.tsx";
 import { ProvisionList, ProvisionForm, ProvisionResult, ProvisionDetail } from "./views/provision.tsx";
+import { ProvisionRedisList, ProvisionRedisForm, ProvisionRedisResult, ProvisionRedisDetail } from "./views/provision-redis.tsx";
+import { provisionRedis, deprovisionRedis } from "./provision-redis.ts";
 
 const app = new Hono();
 
@@ -410,6 +412,74 @@ app.post("/provision/:id/delete", async (c) => {
   const id = Number(c.req.param("id"));
   await deprovisionPostgres(id);
   return c.redirect("/provision");
+});
+
+// ===== Provision Redis =====
+app.get("/provision/redis", (c) => {
+  return c.html(
+    <ProvisionRedisList
+      items={provisionedRedis.list()}
+      cfConfigured={cfConfigured()}
+      portainerConfigured={portainerConfigured()}
+      baseDomain={process.env.CF_BASE_DOMAIN ?? ""}
+    />,
+  );
+});
+
+app.get("/provision/redis/new", (c) => {
+  if (!cfConfigured() || !portainerConfigured()) return c.redirect("/provision/redis");
+  return c.html(
+    <ProvisionRedisForm
+      baseDomain={process.env.CF_BASE_DOMAIN ?? ""}
+      portStart={Number(process.env.PROVISION_REDIS_PORT_START ?? 16379)}
+      portEnd={Number(process.env.PROVISION_REDIS_PORT_END ?? 16999)}
+    />,
+  );
+});
+
+app.post("/provision/redis/new", async (c) => {
+  const form = await c.req.parseBody();
+  const result = await provisionRedis({
+    slugHint: form.slug ? String(form.slug) : undefined,
+    redisVersion: (String(form.redis_version) as "7.4" | "7.2") ?? "7.4",
+    maxMemoryMB: form.max_memory_mb ? Number(form.max_memory_mb) : undefined,
+    appendOnly: form.append_only === "1",
+  });
+
+  if (!result.id) {
+    return c.html(
+      <Layout title="Redis provisioning failed" active="provision-redis">
+        <div class="max-w-xl space-y-4">
+          <h1 class="text-xl font-bold text-red-700">Provisioning failed</h1>
+          <pre class="text-xs bg-red-50 border border-red-200 rounded p-3 whitespace-pre-wrap">{result.error}</pre>
+          <a href="/provision/redis" class="inline-block bg-slate-900 text-white px-3 py-2 rounded text-sm">Back</a>
+        </div>
+      </Layout>,
+    );
+  }
+
+  const rec = provisionedRedis.get(result.id)!;
+  return c.html(
+    <ProvisionRedisResult
+      record={rec}
+      connectionUrl={result.connectionUrl}
+      password={result.password}
+      error={result.ok ? undefined : result.error}
+    />,
+  );
+});
+
+app.get("/provision/redis/:id", (c) => {
+  const id = Number(c.req.param("id"));
+  const rec = provisionedRedis.get(id);
+  if (!rec) return c.notFound();
+  return c.html(<ProvisionRedisDetail record={rec} />);
+});
+
+app.post("/provision/redis/:id/delete", async (c) => {
+  const id = Number(c.req.param("id"));
+  await deprovisionRedis(id);
+  return c.redirect("/provision/redis");
 });
 
 // ===== Boot =====

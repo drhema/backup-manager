@@ -89,6 +89,22 @@ CREATE TABLE IF NOT EXISTS provisioned_postgres (
   error           TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS provisioned_redis (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug            TEXT NOT NULL UNIQUE,
+  subdomain       TEXT NOT NULL UNIQUE,
+  domain          TEXT NOT NULL,
+  host_port       INTEGER NOT NULL,
+  redis_version   TEXT NOT NULL,
+  password_enc    TEXT NOT NULL,
+  cf_record_id    TEXT,
+  portainer_stack_id INTEGER,
+  container_name  TEXT NOT NULL,
+  status          TEXT NOT NULL CHECK (status IN ('creating','ready','failed','deleted')),
+  error           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 `);
 
 // ---- Types ----
@@ -434,6 +450,87 @@ export const provisioned = {
       merged.portainer_stack_id,
       merged.container_name,
       merged.database_id,
+      merged.status,
+      merged.error,
+      id,
+    );
+  },
+};
+
+// ---- Provisioned Redis ----
+export type ProvisionedRedis = {
+  id: number;
+  slug: string;
+  subdomain: string;
+  domain: string;
+  host_port: number;
+  redis_version: string;
+  password: string;            // decrypted in-memory
+  cf_record_id: string | null;
+  portainer_stack_id: number | null;
+  container_name: string;
+  status: "creating" | "ready" | "failed" | "deleted";
+  error: string | null;
+  created_at: string;
+};
+
+export const provisionedRedis = {
+  list(): ProvisionedRedis[] {
+    const rows = db
+      .query("SELECT * FROM provisioned_redis WHERE status != 'deleted' ORDER BY id DESC")
+      .all() as any[];
+    return rows.map((r) => ({ ...r, password: decrypt(r.password_enc) }));
+  },
+  get(id: number): ProvisionedRedis | null {
+    const r = db
+      .query("SELECT * FROM provisioned_redis WHERE id = ?")
+      .get(id) as any;
+    if (!r) return null;
+    return { ...r, password: decrypt(r.password_enc) };
+  },
+  create(input: {
+    slug: string;
+    subdomain: string;
+    domain: string;
+    host_port: number;
+    redis_version: string;
+    password: string;
+    container_name: string;
+  }): ProvisionedRedis {
+    const info = db
+      .query(
+        `INSERT INTO provisioned_redis (slug, subdomain, domain, host_port, redis_version, password_enc, container_name, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'creating')`,
+      )
+      .run(
+        input.slug,
+        input.subdomain,
+        input.domain,
+        input.host_port,
+        input.redis_version,
+        encrypt(input.password),
+        input.container_name,
+      );
+    return this.get(Number(info.lastInsertRowid))!;
+  },
+  update(id: number, fields: Partial<Omit<ProvisionedRedis, "id" | "created_at">>) {
+    const cur = this.get(id);
+    if (!cur) throw new Error("Provisioned Redis not found");
+    const merged = { ...cur, ...fields };
+    db.query(
+      `UPDATE provisioned_redis SET slug=?, subdomain=?, domain=?, host_port=?, redis_version=?,
+         password_enc=?, cf_record_id=?, portainer_stack_id=?, container_name=?, status=?, error=?
+       WHERE id=?`,
+    ).run(
+      merged.slug,
+      merged.subdomain,
+      merged.domain,
+      merged.host_port,
+      merged.redis_version,
+      encrypt(merged.password),
+      merged.cf_record_id,
+      merged.portainer_stack_id,
+      merged.container_name,
       merged.status,
       merged.error,
       id,
